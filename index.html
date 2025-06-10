@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bus Production Monitoring</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- jsPDF Libraries for PDF Export -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .progress-bar-inner {
+            transition: width 0.3s ease-in-out;
+        }
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .modal-container {
+            background: white;
+            border-radius: 8px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            padding: 24px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #09f;
+            animation: spin 1s ease infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+    <div id="app" class="container mx-auto p-4 sm:p-6 lg:p-8">
+        <!-- App content will be rendered here by JavaScript -->
+    </div>
+
+    <!-- Modals -->
+    <div id="tech-modal" class="modal-overlay hidden">
+        <div class="modal-container">
+            <div class="flex justify-between items-center mb-4"><h2 id="tech-modal-title" class="text-2xl font-bold text-gray-800">Assign Technicians</h2><button data-action="close-modal" data-modal-id="tech-modal" class="text-gray-500 hover:text-gray-800 text-2xl">&times;</button></div>
+            <div id="tech-modal-content"></div>
+            <div class="mt-6 flex justify-end"><button data-action="save-tech-selection" class="px-5 py-2 bg-indigo-600 text-white font-semibold rounded-md shadow-sm hover:bg-indigo-700">Save</button></div>
+        </div>
+    </div>
+    <div id="manage-techs-modal" class="modal-overlay hidden">
+        <div class="modal-container">
+            <div class="flex justify-between items-center mb-4"><h2 class="text-2xl font-bold text-gray-800">Manage Technicians</h2><button data-action="close-modal" data-modal-id="manage-techs-modal" class="text-gray-500 hover:text-gray-800 text-2xl">&times;</button></div>
+            <div id="manage-techs-modal-content"></div>
+             <div class="mt-6 flex justify-end"><button data-action="close-modal" data-modal-id="manage-techs-modal" class="px-5 py-2 bg-gray-600 text-white font-semibold rounded-md shadow-sm hover:bg-gray-700">Close</button></div>
+        </div>
+    </div>
+    <div id="manage-buses-modal" class="modal-overlay hidden">
+        <div class="modal-container">
+            <div class="flex justify-between items-center mb-4"><h2 class="text-2xl font-bold text-gray-800">Manage Bus Units</h2><button data-action="close-modal" data-modal-id="manage-buses-modal" class="text-gray-500 hover:text-gray-800 text-2xl">&times;</button></div>
+            <div id="manage-buses-modal-content"></div>
+             <div class="mt-6 flex justify-end"><button data-action="close-modal" data-modal-id="manage-buses-modal" class="px-5 py-2 bg-gray-600 text-white font-semibold rounded-md shadow-sm hover:bg-gray-700">Close</button></div>
+        </div>
+    </div>
+    <div id="work-instruction-modal" class="modal-overlay hidden">
+        <div class="modal-container">
+            <div class="flex justify-between items-center mb-4"><h2 id="wi-modal-title" class="text-2xl font-bold text-gray-800">Edit Work Instruction</h2><button data-action="close-modal" data-modal-id="work-instruction-modal" class="text-gray-500 hover:text-gray-800 text-2xl">&times;</button></div>
+            <div>
+                <label for="wi-url-input" class="block text-sm font-medium text-gray-700">PDF URL</label>
+                <input type="url" id="wi-url-input" class="mt-1 block w-full p-2 border border-gray-300 rounded-md shadow-sm" placeholder="https://example.com/instruction.pdf">
+            </div>
+            <div class="mt-6 flex justify-between">
+                <button data-action="remove-wi-link" class="px-5 py-2 bg-red-600 text-white font-semibold rounded-md shadow-sm hover:bg-red-700">Remove Link</button>
+                <button data-action="save-wi-link" class="px-5 py-2 bg-indigo-600 text-white font-semibold rounded-md shadow-sm hover:bg-indigo-700">Save</button>
+            </div>
+        </div>
+    </div>
+
+
+    <script>
+    const App = {
+        // --- App State & Constants ---
+        STORAGE_KEY: 'ebusMultiUnitTrackerData_v53_responsive_header',
+        pageMode: new URLSearchParams(window.location.search).get('mode') === 'view' ? 'view' : 'edit',
+        state: {
+            currentPage: 'summary',
+            activeBusUnit: null,
+            buses: {},
+            technicians: ["Adi", "Budi", "Candra", "Dedi", "Eka", "Fahri", "Gita"],
+            expandedManageBusCategories: []
+        },
+        currentEditingJobId: null,
+
+        // --- DATA & STATE MANAGEMENT ---
+        getDefaultBusData() {
+            const jobsTemplate = [
+                { id: "1", name: "Unloading", jobs: [ "Chassis + Steering", "Battery + PDU", "Tire & Assembly", "Motor & MCU", "Scaling Weight of Rolling Chassis", "Parking" ]},
+                { id: "2", name: "Incoming Inspection", jobs: [ "Inspection by Quality", "Parking" ]},
+                { id: "3", name: "Assembly", jobs: [ "Motor + MCU", "Change MCU Bolt & Add Isolator", "PDU", "Interior Cable + MCB", "Fire Extinguisher (Cable)", "Hazard Circuit (only VL)", "Charger Relocation (if needed)", "VIN Number", "Cable & Hose Covering" ]},
+                { id: "4", name: "Trimming", jobs: [ "Battery", "Accu Battery", "Fire Extinguisher (Piping, Controller, etc.)", "T-Box", "Fill The Coolant and Power Steering", "Add Diaelectric Grease to HV Connector", "Add Resistor to LMU", "Replace Chinese Sticker" ]},
+                { id: "5", name: "Final Inspection", jobs: [ "Check Function", "Inspection by Quality", "Sticker", "Tools", "Road Test", "PDI" ]}
+            ];
+            let stages = jobsTemplate.map(stageData => ({
+                id: stageData.id, name: stageData.name, progress: 0,
+                jobs: stageData.jobs.map((desc, index) => ({ id: `${stageData.id}.${index + 1}`, desc, status: "Not Started", progress: 0, notes: "", assignedTo: [], dateStarted: null, dateFinished: null, workInstructionUrl: "", timeSpent: 0 }))
+            }));
+            return { stages, expandedStageIds: [] };
+        },
+
+        saveData() {
+            localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.state));
+        },
+
+        loadData() {
+            const savedData = localStorage.getItem(this.STORAGE_KEY);
+            if (savedData) {
+                try {
+                    this.state = JSON.parse(savedData);
+                    if (!this.state.technicians) this.state.technicians = ["Adi", "Budi", "Candra", "Dedi", "Eka", "Fahri", "Gita"];
+                    if (!this.state.expandedManageBusCategories) this.state.expandedManageBusCategories = [];
+                    if (!this.state.currentPage) this.state.currentPage = 'summary';
+                    Object.values(this.state.buses).forEach(bus => {
+                        if (!bus.stages || bus.stages.length < 5) bus.stages = this.getDefaultBusData().stages;
+                        if (!bus.expandedStageIds) bus.expandedStageIds = [];
+                        bus.stages.forEach(stage => {
+                            stage.jobs.forEach(job => {
+                                if (job.workInstructionUrl === undefined) job.workInstructionUrl = "";
+                                if (job.timeSpent === undefined) job.timeSpent = 0;
+                            });
+                        });
+                    });
+                } catch (e) {
+                    console.error("Error parsing saved data, falling back to default.", e);
+                    this.initializeDefaultState();
+                }
+            } else {
+                this.initializeDefaultState();
+            }
+        },
+
+        initializeDefaultState() {
+            const firstUnitName = '8NV-001';
+            this.state.buses = { [firstUnitName]: this.getDefaultBusData() };
+            this.state.activeBusUnit = firstUnitName;
+            this.state.technicians = ["Adi", "Budi", "Candra", "Dedi", "Eka", "Fahri", "Gita"];
+            this.state.expandedManageBusCategories = [];
+            this.state.currentPage = 'summary';
+        },
+
+        // --- LOGIC (Shared) ---
+        updateJobStatus(job) {
+            if (job.progress === 0) job.status = "Not Started";
+            else if (job.progress === 100) job.status = "Completed";
+            else job.status = "In Progress";
+        },
+        
+        updateStageProgress(stage) {
+            const totalJobProgress = stage.jobs.reduce((sum, job) => sum + job.progress, 0);
+            stage.progress = stage.jobs.length > 0 ? totalJobProgress / stage.jobs.length : 0;
+        },
+
+        updateAllBusProgress() {
+            const activeBus = this.state.buses[this.state.activeBusUnit];
+            if (!activeBus) return;
+            activeBus.stages.forEach(stage => this.updateStageProgress(stage));
+        },
+
+        calculateBusProgress(busData) {
+            if (!busData || !busData.stages) return 0;
+            let totalStageProgress = 0;
+            busData.stages.forEach(stage => {
+                 const totalJobProgress = stage.jobs.reduce((sum, job) => sum + job.progress, 0);
+                 const stageProgress = stage.jobs.length > 0 ? totalJobProgress / stage.jobs.length : 0;
+                 totalStageProgress += stageProgress;
+            });
+            return busData.stages.length > 0 ? totalStageProgress / busData.stages.length : 0;
+        },
+
+        getOverallProgress() {
+            const activeBus = this.state.buses[this.state.activeBusUnit];
+            if (!activeBus) return 0;
+            return this.calculateBusProgress(activeBus);
+        },
+
+        getStatusColor(status) {
+            switch (status) {
+                case "Completed": return "text-green-600";
+                case "In Progress": return "text-blue-600";
+                default: return "text-gray-500";
+            }
+        },
+
+        findJobById(jobId) {
+            const activeBus = this.state.buses[this.state.activeBusUnit];
+            if (!activeBus) return null;
+            for (const stage of activeBus.stages) {
+                const foundJob = stage.jobs.find(j => j.id === jobId);
+                if (foundJob) return foundJob;
+            }
+            return null;
+        },
+
+        // --- JOB-SPECIFIC LOGIC ---
+        updateJobProgress(jobId, newProgress) {
+            const progress = parseInt(newProgress, 10);
+            if (isNaN(progress)) return;
+            const job = this.findJobById(jobId);
+            if (!job) return;
+            const oldProgress = job.progress;
+            job.progress = progress;
+            if (oldProgress === 0 && progress > 0) job.dateStarted = new Date().toISOString();
+            else if (progress === 0) { job.dateStarted = null; job.dateFinished = null; }
+            if (oldProgress < 100 && progress === 100) job.dateFinished = new Date().toISOString();
+            else if (progress < 100) job.dateFinished = null;
+            this.updateJobStatus(job);
+            this.updateAllBusProgress();
+            this.saveData();
+            this.updateUIForJobChange(jobId);
+        },
+
+        updateAssignment(jobId, assignedToArray) {
+            const job = this.findJobById(jobId);
+            if (job) { job.assignedTo = assignedToArray; this.saveData(); this.render(); }
+        },
+
+        updateJobNotes(jobId, newNotes) {
+            const job = this.findJobById(jobId);
+            if (job) { job.notes = newNotes; this.saveData(); }
+        },
+
+        updateWorkInstructionUrl(jobId, newUrl) {
+            const job = this.findJobById(jobId);
+            if(job) { job.workInstructionUrl = newUrl.trim(); this.saveData(); this.render(); }
+        },
+
+        updateTimeSpent(jobId) {
+            const job = this.findJobById(jobId);
+            if (!job) return;
+            const row = document.querySelector(`tr[data-job-id="${jobId}"]`);
+            if (!row) return;
+            const hoursInput = row.querySelector(`select[data-time-unit="h"]`);
+            const minutesInput = row.querySelector(`select[data-time-unit="m"]`);
+            const hours = parseInt(hoursInput.value, 10) || 0;
+            const minutes = parseInt(minutesInput.value, 10) || 0;
+            job.timeSpent = (hours * 60) + minutes;
+            this.saveData();
+        },
+
+        // --- MODALS & MANAGERS ---
+        closeModal(modalId) { document.getElementById(modalId).classList.add('hidden'); },
+        
+        openTechModal(jobId) {
+            if (this.pageMode === 'view') return;
+            this.currentEditingJobId = jobId;
+            const job = this.findJobById(jobId);
+            if (!job) return;
+            document.getElementById('tech-modal-title').innerText = `Assign Technicians for Job ${jobId}`;
+            const modalContent = document.getElementById('tech-modal-content');
+            let checkboxesHtml = '<div class="grid grid-cols-2 md:grid-cols-3 gap-3">';
+            this.state.technicians.forEach(tech => {
+                const isChecked = job.assignedTo.includes(tech);
+                checkboxesHtml += `<label class="flex items-center space-x-2 p-2 rounded-md hover:bg-gray-100 cursor-pointer"><input type="checkbox" value="${tech}" class="tech-checkbox h-4 w-4 rounded border-gray-300 text-indigo-600" ${isChecked ? 'checked' : ''}><span>${tech}</span></label>`;
+            });
+            checkboxesHtml += '</div>';
+            modalContent.innerHTML = checkboxesHtml;
+            document.getElementById('tech-modal').classList.remove('hidden');
+        },
+        
+        saveTechSelection() {
+            if (!this.currentEditingJobId) return;
+            const checkboxes = document.querySelectorAll('.tech-checkbox:checked');
+            const selectedTechnicians = Array.from(checkboxes).map(cb => cb.value);
+            this.updateAssignment(this.currentEditingJobId, selectedTechnicians);
+            this.closeModal('tech-modal');
+        },
+
+        openManageTechsModal() {
+            if (this.pageMode === 'view') return;
+            const modalContent = document.getElementById('manage-techs-modal-content');
+            let contentHtml = `<div class="mb-4"><label for="new-tech-name" class="block text-sm font-medium text-gray-700">Add New Technician</label><div class="mt-1 flex rounded-md shadow-sm"><input type="text" id="new-tech-name" class="flex-1 block w-full rounded-none rounded-l-md p-2 border-gray-300" placeholder="e.g., Joko"><button data-action="add-technician" class="inline-flex items-center px-3 rounded-r-md border border-transparent bg-green-600 text-white hover:bg-green-700">Add</button></div></div>`;
+            contentHtml += '<h3 class="text-lg font-medium text-gray-900 mb-2">Current Technicians</h3><ul class="space-y-2">';
+            this.state.technicians.forEach(tech => {
+                contentHtml += `<li class="flex justify-between items-center p-2 bg-gray-50 rounded-md"><span>${tech}</span><button data-action="delete-technician" data-name="${tech}" class="text-red-500 hover:text-red-700 font-bold">&times;</button></li>`;
+            });
+            contentHtml += '</ul>';
+            modalContent.innerHTML = contentHtml;
+            document.getElementById('manage-techs-modal').classList.remove('hidden');
+        },
+        
+        addTechnician() {
+            const inputEl = document.getElementById('new-tech-name');
+            const newName = inputEl.value.trim();
+            if (newName && !this.state.technicians.includes(newName)) {
+                this.state.technicians.push(newName);
+                this.saveData();
+                this.openManageTechsModal();
+            }
+            inputEl.value = '';
+        },
+        
+        deleteTechnician(nameToDelete) {
+            if (confirm(`Are you sure you want to delete technician '${nameToDelete}'? They will be unassigned from all jobs.`)) {
+                this.state.technicians = this.state.technicians.filter(tech => tech !== nameToDelete);
+                Object.values(this.state.buses).forEach(bus => {
+                    bus.stages.forEach(stage => {
+                        stage.jobs.forEach(job => {
+                            job.assignedTo = job.assignedTo.filter(tech => tech !== nameToDelete);
+                        });
+                    });
+                });
+                this.saveData();
+                this.openManageTechsModal();
+                this.render();
+            }
+        },
+        
+        openManageBusesModal() {
+            if (this.pageMode === 'view') return;
+            const modalContent = document.getElementById('manage-buses-modal-content');
+            let contentHtml = `<div class="mb-4 p-4 border rounded-md bg-gray-50"><h3 class="text-lg font-medium text-gray-900 mb-2">Add New Bus Unit</h3><div class="grid grid-cols-2 gap-2 items-end"><div><label for="modal-new-unit-category" class="block text-sm font-medium text-gray-700 mb-1">Category</label><select id="modal-new-unit-category" class="w-full p-2 border border-gray-300 rounded-md"><option>8NV</option><option>8VL</option><option>12HD</option></select></div><div><label for="modal-new-unit-number" class="block text-sm font-medium text-gray-700 mb-1">Unit No.</label><div class="flex items-center"><input type="number" id="modal-new-unit-number" min="1" placeholder="e.g., 1" class="w-full p-2 border border-gray-300 rounded-l-md"><button data-action="add-bus-from-modal" class="px-4 py-2 bg-green-600 text-white font-semibold rounded-r-md h-full">Add</button></div></div></div></div>`;
+            const groupedUnits = {};
+            Object.keys(this.state.buses).sort().forEach(busId => {
+                const category = busId.split('-')[0];
+                if (!groupedUnits[category]) groupedUnits[category] = [];
+                groupedUnits[category].push(busId);
+            });
+            contentHtml += '<h3 class="text-lg font-medium text-gray-900 mb-2 mt-4">Current Bus Units</h3><div class="space-y-2">';
+            ['8NV', '8VL', '12HD'].forEach(category => {
+                if (groupedUnits[category] && groupedUnits[category].length > 0) {
+                    const isExpanded = this.state.expandedManageBusCategories?.includes(category);
+                    const arrow = isExpanded ? '&#9662;' : '&#9656;';
+                    contentHtml += `<div><button data-action="toggle-bus-category" data-category="${category}" class="w-full flex justify-between items-center p-2 bg-gray-100 hover:bg-gray-200 rounded-md text-left font-semibold"><span>${category} (${groupedUnits[category].length} units)</span><span class="text-lg">${arrow}</span></button><ul class="space-y-1 mt-1 pl-4 ${isExpanded ? '' : 'hidden'}">`;
+                    groupedUnits[category].forEach(busId => { contentHtml += `<li class="flex justify-between items-center p-2 bg-gray-50 rounded-md"><span>${busId}</span><button data-action="delete-bus-from-modal" data-bus-id="${busId}" class="text-red-500 hover:text-red-700 font-bold">&times;</button></li>`; });
+                    contentHtml += `</ul></div>`;
+                }
+            });
+            contentHtml += '</div>';
+            modalContent.innerHTML = contentHtml;
+            document.getElementById('manage-buses-modal').classList.remove('hidden');
+        },
+        
+        addBusFromModal() {
+            const category = document.getElementById('modal-new-unit-category').value;
+            const numberEl = document.getElementById('modal-new-unit-number');
+            const newUnitName = `${category}-${String(numberEl.value).padStart(3, '0')}`;
+            if (!numberEl.value || numberEl.value < 1) { alert('Please enter a valid unit number (1 or higher).'); return; }
+            if (this.state.buses[newUnitName]) { alert(`A bus unit with the name '${newUnitName}' already exists.`); return; }
+            this.state.buses[newUnitName] = this.getDefaultBusData();
+            numberEl.value = '';
+            this.saveData(); this.openManageBusesModal(); this.render();
+        },
+        
+        deleteBusFromModal(busIdToDelete) {
+             if (Object.keys(this.state.buses).length <= 1) { alert("You cannot delete the last remaining bus unit."); return; }
+            if (confirm(`Are you sure you want to delete '${busIdToDelete}'? This action is permanent.`)) {
+                delete this.state.buses[busIdToDelete];
+                if (this.state.activeBusUnit === busIdToDelete) { this.state.activeBusUnit = Object.keys(this.state.buses)[0]; }
+                this.saveData(); this.openManageBusesModal(); this.render();
+            }
+        },
+        
+        openWorkInstructionModal(jobId) {
+            if (this.pageMode === 'view') return;
+            this.currentEditingJobId = jobId;
+            const job = this.findJobById(jobId);
+            if (!job) return;
+            document.getElementById('wi-modal-title').innerText = `Work Instruction for Job ${jobId}`;
+            document.getElementById('wi-url-input').value = job.workInstructionUrl || '';
+            document.getElementById('work-instruction-modal').classList.remove('hidden');
+        },
+        
+        saveWorkInstructionLink() {
+            if (!this.currentEditingJobId) return;
+            const newUrl = document.getElementById('wi-url-input').value;
+            this.updateWorkInstructionUrl(this.currentEditingJobId, newUrl);
+            this.closeModal('work-instruction-modal');
+        },
+        
+        removeWorkInstructionLink() {
+            if (!this.currentEditingJobId) return;
+            if (confirm("Are you sure you want to remove this link?")) {
+                this.updateWorkInstructionUrl(this.currentEditingJobId, "");
+                this.closeModal('work-instruction-modal');
+            }
+        },
+        
+        toggleStage(stageId) {
+            const activeBus = this.state.buses[this.state.activeBusUnit];
+            if (!activeBus) return;
+            if (!activeBus.expandedStageIds) activeBus.expandedStageIds = [];
+            const index = activeBus.expandedStageIds.indexOf(stageId);
+            if (index > -1) activeBus.expandedStageIds.splice(index, 1);
+            else activeBus.expandedStageIds.push(stageId);
+            this.saveData();
+            this.render();
+        },
+        
+         toggleBusCategory(category) {
+             if (!this.state.expandedManageBusCategories) this.state.expandedManageBusCategories = [];
+            const index = this.state.expandedManageBusCategories.indexOf(category);
+            if (index > -1) this.state.expandedManageBusCategories.splice(index, 1);
+            else this.state.expandedManageBusCategories.push(category);
+            this.saveData();
+            this.openManageBusesModal();
+        },
+
+        // --- CLOCK & FORMATTING---
+        updateClockDisplay() {
+            const clockElement = document.getElementById('live-clock');
+            if (!clockElement) return;
+            const now = new Date();
+            const dateOptions = { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' };
+            clockElement.textContent = `${now.toLocaleDateString('en-US', dateOptions)} | ${now.toLocaleTimeString('en-GB')}`;
+        },
+        formatDate(isoString) {
+            if (!isoString) return 'N/A';
+            const date = new Date(isoString);
+            const dateOptions = { day: 'numeric', month: 'short', year: '2-digit' };
+            return date.toLocaleDateString('en-GB', dateOptions);
+        },
+        formatTimeSpent(totalMinutes) {
+            if (!totalMinutes) return '0h 0m';
+            const hours = Math.floor(totalMinutes / 60);
+            const minutes = totalMinutes % 60;
+            return `${hours}h ${minutes}m`;
+        },
+
+        // --- OPTIMIZED UI UPDATES ---
+        updateUIForJobChange(jobId) {
+            const job = this.findJobById(jobId);
+            if (!job) return;
+            const stageId = jobId.split('.')[0];
+            const activeBusData = this.state.buses[this.state.activeBusUnit];
+            this.updateStageProgress(activeBusData.stages.find(s => s.id === stageId));
+            const row = document.querySelector(`tr[data-job-id="${jobId}"]`);
+            if (!row) return;
+
+            row.querySelector('.job-status').textContent = job.status;
+            row.querySelector('.job-status').className = `job-status px-3 py-4 whitespace-nowrap text-sm font-semibold ${this.getStatusColor(job.status)} text-center`;
+            row.querySelector('.job-date-started').textContent = this.formatDate(job.dateStarted);
+            row.querySelector('.job-date-finished').textContent = this.formatDate(job.dateFinished);
+            
+            document.querySelector(`#stage-${stageId}-progress`).style.width = `${activeBusData.stages.find(s => s.id === stageId).progress.toFixed(2)}%`;
+            const overallProgress = this.calculateBusProgress(activeBusData);
+            document.querySelector('#overall-progress-bar').style.width = `${overallProgress.toFixed(2)}%`;
+            document.querySelector('#overall-progress-text').textContent = `${overallProgress.toFixed(2)}%`;
+        },
+        
+        // --- EXPORT ---
+        exportSummaryToCSV() {
+            const headers = ['Bus Unit', 'Category', 'Overall Progress (%)'];
+            let csvContent = headers.join(',') + '\r\n';
+            
+            Object.keys(this.state.buses).sort().forEach(busId => {
+                const busData = this.state.buses[busId];
+                const progress = this.calculateBusProgress(busData);
+                const category = busId.split('-')[0];
+                const row = [busId, category, progress.toFixed(2)];
+                csvContent += row.join(',') + '\r\n';
+            });
+
+            this.downloadCSV(csvContent, 'bus_summary.csv');
+        },
+        
+        exportTrackerToCSV() {
+            const busId = this.state.activeBusUnit;
+            const busData = this.state.buses[busId];
+            if (!busData) return;
+
+            const headers = ['No.', 'Description', 'Assigned', 'Date Started', 'Date Finished', 'Status', 'Progress (%)', 'Time Spent (Minutes)', 'Notes'];
+            let csvContent = headers.join(',') + '\r\n';
+
+            busData.stages.forEach(stage => {
+                csvContent += `"${stage.id}. ${stage.name}",,,,,,,,,\r\n`; // Stage Header
+                stage.jobs.forEach(job => {
+                    const row = [
+                        job.id,
+                        `"${job.desc}"`,
+                        `"${job.assignedTo.join(', ')}"`,
+                        this.formatDate(job.dateStarted),
+                        this.formatDate(job.dateFinished),
+                        job.status,
+                        job.progress,
+                        job.timeSpent,
+                        `"${job.notes.replace(/"/g, '""')}"`
+                    ];
+                    csvContent += row.join(',') + '\r\n';
+                });
+            });
+            
+            this.downloadCSV(csvContent, `tracker_${busId}.csv`);
+        },
+        
+        downloadCSV(csvContent, fileName) {
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            if (link.download !== undefined) {
+                const url = URL.createObjectURL(blob);
+                link.setAttribute("href", url);
+                link.setAttribute("download", fileName);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+        },
+
+        exportSummaryToPDF() {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+
+            doc.setFontSize(18);
+            doc.setFont('helvetica', 'bold');
+            doc.text("All Bus Units Summary", doc.internal.pageSize.getWidth() / 2, 15, { align: 'center' });
+            
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'normal');
+            doc.text(`Generated on: ${new Date().toLocaleDateString()}`, doc.internal.pageSize.getWidth() - 14, 10, { align: 'right' });
+
+
+            const tableData = Object.keys(this.state.buses).sort().map(busId => {
+                const busData = this.state.buses[busId];
+                const progress = this.calculateBusProgress(busData);
+                const category = busId.split('-')[0];
+                return [busId, category, `${progress.toFixed(2)}%`];
+            });
+
+            doc.autoTable({
+                head: [['Bus Unit', 'Category', 'Overall Progress']],
+                body: tableData,
+                startY: 25,
+                theme: 'grid',
+                headStyles: { fillColor: [41, 128, 185], textColor: 255, halign: 'center' },
+                styles: { cellPadding: 2, fontSize: 10, halign: 'center' },
+                 columnStyles: {
+                    0: { halign: 'left' },
+                    1: { halign: 'left' }
+                }
+            });
+            
+            const pageCount = doc.internal.getNumberOfPages();
+            for (let i = 1; i <= pageCount; i++) {
+                doc.setPage(i);
+                doc.setFontSize(8);
+                doc.setTextColor(150);
+                doc.text(`Page ${i} of ${pageCount}`, doc.internal.pageSize.getWidth() / 2, doc.internal.pageSize.getHeight() - 10, { align: 'center' });
+            }
+
+
+            doc.save('bus_summary.pdf');
+        },
+
+        exportTrackerToPDF() {
+            const busId = this.state.activeBusUnit;
+            const busData = this.state.buses[busId];
+            if (!busData) return;
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF({ orientation: 'landscape' });
+            const overallProgress = this.getOverallProgress();
+
+            doc.setFontSize(18);
+            doc.setFont('helvetica', 'bold');
+            doc.text(`Tracker Report for: ${busId}`, doc.internal.pageSize.getWidth() / 2, 15, { align: 'center' });
+
+            doc.setFontSize(12);
+            doc.setFont('helvetica', 'bold');
+            doc.text(`Overall Progress: ${overallProgress.toFixed(2)}%`, doc.internal.pageSize.getWidth() / 2, 22, { align: 'center' });
+
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'normal');
+            doc.text(`Generated on: ${new Date().toLocaleDateString()}`, doc.internal.pageSize.getWidth() - 14, 10, { align: 'right' });
+
+
+            let startY = 32;
+            busData.stages.forEach(stage => {
+                 if (startY > 180) { 
+                    doc.addPage();
+                    startY = 15;
+                }
+                doc.autoTable({
+                    head: [[{ content: `${stage.id}. ${stage.name} (${stage.progress.toFixed(2)}%)`, colSpan: 9, styles: { fillColor: [41, 128, 185], textColor: 255 } }]],
+                    startY: startY,
+                    theme: 'grid',
+                });
+                
+                const tableData = stage.jobs.map(job => [
+                    job.id,
+                    job.desc,
+                    job.assignedTo.join(', '),
+                    this.formatDate(job.dateStarted),
+                    this.formatDate(job.dateFinished),
+                    job.status,
+                    `${job.progress}%`,
+                    this.formatTimeSpent(job.timeSpent),
+                    job.notes || 'N/A'
+                ]);
+                
+                doc.autoTable({
+                    head: [['No.', 'Description', 'Assigned', 'Started', 'Finished', 'Status', 'Progress', 'Time Spent', 'Notes']],
+                    body: tableData,
+                    startY: doc.lastAutoTable.finalY,
+                    theme: 'grid',
+                    headStyles: { fillColor: [219, 234, 254], textColor: 20, halign: 'center' },
+                    styles: { halign: 'center', cellPadding: 2, fontSize: 8 },
+                    columnStyles: {
+                        1: { halign: 'left', cellWidth: 'auto' },
+                        2: { halign: 'left' },
+                        8: { halign: 'left', cellWidth: 50}
+                    }
+                });
+                startY = doc.lastAutoTable.finalY + 10;
+            });
+
+            const pageCount = doc.internal.getNumberOfPages();
+            for (let i = 1; i <= pageCount; i++) {
+                doc.setPage(i);
+                doc.setFontSize(8);
+                doc.setTextColor(150);
+                doc.text(`Page ${i} of ${pageCount}`, doc.internal.pageSize.getWidth() / 2, doc.internal.pageSize.getHeight() - 10, { align: 'center' });
+            }
+
+            doc.save(`tracker_${busId}.pdf`);
+        },
+
+        // --- RENDERING ---
+        renderHeader() {
+            const navButtonClasses = (page) => `w-full px-4 py-2 font-semibold rounded-md ${this.state.currentPage === page ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`;
+            return `
+                <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+                     <div class="text-center mb-4">
+                        <h1 class="text-3xl font-bold text-gray-800">Bus Production Monitoring</h1>
+                        <div id="live-clock" class="text-sm text-gray-500 mt-2"></div>
+                    </div>
+                    <div class="flex space-x-2 border-b pb-4 mb-4">
+                        <button data-action="navigate" data-page="summary" class="${navButtonClasses('summary')}">Summary</button>
+                        <button data-action="navigate" data-page="tracker" class="${navButtonClasses('tracker')}">Tracker</button>
+                    </div>
+                </div>`;
+        },
+        
+        renderTrackerView() {
+            const activeBus = this.state.buses[this.state.activeBusUnit];
+            const overallProgress = this.getOverallProgress();
+             const groupedUnits = {};
+            Object.keys(this.state.buses).sort().forEach(unitId => {
+                const category = unitId.split('-')[0];
+                if (!groupedUnits[category]) groupedUnits[category] = [];
+                groupedUnits[category].push(unitId);
+            });
+            let unitOptions = '';
+            for (const category of ['8NV', '8VL', '12HD']) {
+                if (groupedUnits[category]) {
+                    unitOptions += `<optgroup label="${category}">`;
+                    groupedUnits[category].forEach(unitId => { unitOptions += `<option value="${unitId}" ${unitId === this.state.activeBusUnit ? 'selected' : ''}>${unitId}</option>`; });
+                    unitOptions += `</optgroup>`;
+                }
+            }
+            
+            let html = `<div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                    <div>
+                        <label for="unit-selector" class="block text-sm font-medium text-gray-700 mb-1">Select Active Bus Unit</label>
+                        <select id="unit-selector" class="w-full p-2 border border-gray-300 rounded-md shadow-sm">${unitOptions}</select>
+                    </div>
+                    ${this.pageMode === 'edit' ? `
+                    <div class="flex space-x-2 items-end">
+                         <button data-action="open-manage-buses" class="w-full px-4 py-2 bg-green-600 text-white font-semibold rounded-md">Manage Bus Units</button>
+                         <button data-action="open-manage-techs" class="w-full px-4 py-2 bg-blue-600 text-white font-semibold rounded-md">Manage Technicians</button>
+                    </div>` : '<div class="p-4 bg-yellow-100 text-yellow-800 rounded-lg text-center font-semibold flex items-center justify-center">VIEW-ONLY MODE</div>'}
+                </div>
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold">Overall Progress for <span class="text-indigo-600">${this.state.activeBusUnit || 'N/A'}</span></h2>
+                    <div class="flex space-x-2">
+                        <button data-action="export-tracker-csv" class="px-3 py-1 bg-gray-600 text-white text-sm rounded-md hover:bg-gray-700">Export CSV</button>
+                        <button data-action="export-tracker-pdf" class="px-3 py-1 bg-red-600 text-white text-sm rounded-md hover:bg-red-700">Export PDF</button>
+                    </div>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-8"><div id="overall-progress-bar" class="progress-bar-inner bg-indigo-500 h-8 rounded-full text-white font-bold flex items-center justify-center" style="width: ${overallProgress.toFixed(2)}%;"><span id="overall-progress-text">${overallProgress.toFixed(2)}%</span></div></div>
+            </div>`;
+            
+            if (activeBus) {
+                activeBus.stages.forEach(stage => {
+                    const isStageExpanded = activeBus.expandedStageIds.includes(stage.id);
+                    const stageArrow = isStageExpanded ? '&#9662;' : '&#9656;';
+                    html += `<div class="bg-white rounded-lg shadow-md p-6 mb-6"><button data-action="toggle-stage" data-stage-id="${stage.id}" class="w-full flex justify-between items-center text-left"><h3 class="text-2xl font-bold">${stage.id}. ${stage.name}</h3><span class="text-2xl">${stageArrow}</span></button><div class="w-full bg-gray-200 rounded-full h-4 mt-2"><div id="stage-${stage.id}-progress" class="progress-bar-inner bg-blue-500 h-4 rounded-full" style="width: ${stage.progress.toFixed(2)}%;"></div></div><div class="overflow-x-auto mt-4 ${isStageExpanded ? '' : 'hidden'}"><table class="min-w-full divide-y divide-gray-200"><thead class="bg-gray-50"><tr><th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style="width: 5%">No.</th><th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style="width: 20%">Description</th><th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider" style="width: 10%">Work Instruction</th><th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider" style="width: 12%">Assigned</th><th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider" style="width: 8%">Date Started</th><th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider" style="width: 8%">Date Finished</th><th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider" style="width: 8%">Status</th><th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider" style="width: 10%">Progress</th><th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider" style="width: 10%">Time Spent</th><th class="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider" style="width: 15%">Notes</th></tr></thead><tbody class="bg-white divide-y divide-gray-200">`;
+                    stage.jobs.forEach(job => {
+                        const assignedToHtml = job.assignedTo.length > 0 ? job.assignedTo.map(tech => `<span class="bg-indigo-100 text-indigo-800 text-xs font-medium px-2.5 py-0.5 rounded-full">${tech}</span>`).join(' ') : '<span class="text-xs text-gray-400">None</span>';
+                        const hasUrl = job.workInstructionUrl && job.workInstructionUrl !== '#';
+                        const progressControl = this.pageMode === 'edit' ? `<select data-action="update-progress" data-job-id="${job.id}" class="job-progress-select w-full p-2 border border-gray-300 rounded-md"><option value="0" ${job.progress === 0 ? 'selected' : ''}>0%</option><option value="25" ${job.progress === 25 ? 'selected' : ''}>25%</option><option value="50" ${job.progress === 50 ? 'selected' : ''}>50%</option><option value="75" ${job.progress === 75 ? 'selected' : ''}>75%</option><option value="100" ${job.progress === 100 ? 'selected' : ''}>100%</option></select>` : `<div class="w-full bg-gray-200 rounded-full h-4"><div class="progress-bar-inner bg-blue-600 h-4 rounded-full" style="width: ${job.progress}%"></div></div>`;
+                        const notesControl = this.pageMode === 'edit' ? `<textarea data-action="update-notes" data-job-id="${job.id}" class="w-full p-2 border border-gray-300 rounded-md" rows="2" placeholder="Add notes...">${job.notes}</textarea>` : `<p class="text-sm text-gray-600 p-2 break-words">${job.notes || 'N/A'}</p>`;
+                        const assignmentControl = this.pageMode === 'edit' ? `<button data-action="open-tech-modal" data-job-id="${job.id}" class="bg-gray-200 text-gray-600 hover:bg-gray-300 rounded-full w-6 h-6 flex items-center justify-center text-lg font-bold">+</button>` : ``;
+                        const workInstructionControl = this.pageMode === 'edit' ? `<div class="flex items-center justify-center space-x-2">${hasUrl ? `<a href="${job.workInstructionUrl}" download target="_blank" class="text-blue-600 hover:text-blue-700 text-2xl" title="Download Work Instruction">&#x2B07;</a>` : '<span class="w-6"></span>'}<button data-action="open-wi-modal" data-job-id="${job.id}" class="text-gray-400 hover:text-gray-600 font-bold" title="Edit Link">&#x270E;</button></div>` : `${hasUrl ? `<a href="${job.workInstructionUrl}" download target="_blank" class="text-blue-600 hover:text-blue-700 font-bold text-2xl">&#x2B07;</a>` : '<span>N/A</span>'}`;
+                        const hours = Math.floor(job.timeSpent / 60);
+                        const minutes = job.timeSpent % 60;
+                        const timeSpentControl = this.pageMode === 'edit'
+                            ? `<div class="flex items-center space-x-1"><select data-action="update-time-spent" data-job-id="${job.id}" data-time-unit="h" class="w-20 p-2 border border-gray-300 rounded-md">${Array.from({length: 25}, (_, i) => `<option value="${i}" ${hours === i ? 'selected' : ''}>${i}h</option>`).join('')}</select><select data-action="update-time-spent" data-job-id="${job.id}" data-time-unit="m" class="w-20 p-2 border border-gray-300 rounded-md">${Array.from({length: 12}, (_, i) => `<option value="${i * 5}" ${minutes === (i*5) ? 'selected' : ''}>${i*5}m</option>`).join('')}</select></div>`
+                            : `<span class="text-sm text-gray-600">${this.formatTimeSpent(job.timeSpent)}</span>`;
+                        html += `<tr data-job-id="${job.id}"><td class="px-3 py-4 text-sm font-medium text-gray-900 text-left">${job.id}</td><td class="px-3 py-4 text-sm text-gray-600 text-left break-words">${job.desc}</td><td class="px-3 py-4 text-center">${workInstructionControl}</td><td class="px-3 py-4"><div class="flex flex-wrap gap-1 items-center justify-center">${assignedToHtml}${assignmentControl}</div></td><td class="job-date-started px-3 py-4 whitespace-nowrap text-sm text-gray-500 text-center">${this.formatDate(job.dateStarted)}</td><td class="job-date-finished px-3 py-4 whitespace-nowrap text-sm text-gray-500 text-center">${this.formatDate(job.dateFinished)}</td><td class="job-status px-3 py-4 whitespace-nowrap text-sm font-semibold ${this.getStatusColor(job.status)} text-center">${job.status}</td><td class="px-3 py-4 whitespace-nowrap text-sm font-medium">${progressControl}</td><td class="px-3 py-4 whitespace-nowrap text-sm font-medium text-center">${timeSpentControl}</td><td class="px-3 py-4 text-sm text-gray-600">${notesControl}</td></tr>`;
+                    });
+                    html += `</tbody></table></div></div>`;
+                });
+            } else {
+                 html += `<div class="text-center p-10 bg-white rounded-lg shadow-md"><h2 class="text-2xl font-semibold text-gray-700">No Bus Units Found</h2><p class="text-gray-500 mt-2">Please add a new bus unit to begin tracking.</p></div>`;
+            }
+            return html;
+        },
+
+        renderSummaryView() {
+            let html = `<div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-2xl font-bold">All Bus Units Summary</h2>
+                    <div class="flex space-x-2">
+                         <button data-action="export-summary-csv" class="px-3 py-1 bg-gray-600 text-white text-sm rounded-md hover:bg-gray-700">Export CSV</button>
+                         <button data-action="export-summary-pdf" class="px-3 py-1 bg-red-600 text-white text-sm rounded-md hover:bg-red-700">Export PDF</button>
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Bus Unit</th>
+                                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
+                                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Overall Progress</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">`;
+
+            Object.keys(this.state.buses).sort().forEach(busId => {
+                const busData = this.state.buses[busId];
+                const progress = this.calculateBusProgress(busData);
+                const category = busId.split('-')[0];
+                html += `
+                    <tr>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 text-center">${busId}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 text-center">${category}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            <div class="w-full bg-gray-200 rounded-full h-6">
+                                <div class="bg-indigo-600 h-6 rounded-full text-white text-xs flex items-center justify-center" style="width: ${progress.toFixed(2)}%">${progress.toFixed(2)}%</div>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            });
+            
+            html += `</tbody></table></div></div>`;
+            return html;
+        },
+
+        render() {
+            const appContainer = document.getElementById('app');
+            if (!appContainer) return;
+            appContainer.innerHTML = `<div class="spinner mx-auto"></div>`;
+            let pageHtml = this.renderHeader();
+            if (this.state.currentPage === 'tracker') {
+                pageHtml += this.renderTrackerView();
+            } else if (this.state.currentPage === 'summary') {
+                pageHtml += this.renderSummaryView();
+            }
+            appContainer.innerHTML = pageHtml;
+            this.updateClockDisplay();
+        },
+        
+        // --- EVENT HANDLING (Centralized) ---
+        attachEventListeners() {
+            document.body.addEventListener('click', (e) => {
+                const target = e.target.closest('[data-action]');
+                if (!target) return;
+                const { action, jobId, stageId, modalId, name, busId, category } = target.dataset;
+                switch (action) {
+                    case 'navigate': this.state.currentPage = target.dataset.page; this.saveData(); this.render(); break;
+                    case 'open-manage-buses': this.openManageBusesModal(); break;
+                    case 'open-manage-techs': this.openManageTechsModal(); break;
+                    case 'toggle-stage': this.toggleStage(stageId); break;
+                    case 'open-tech-modal': this.openTechModal(jobId); break;
+                    case 'open-wi-modal': this.openWorkInstructionModal(jobId); break;
+                    case 'close-modal': this.closeModal(modalId); break;
+                    case 'add-technician': this.addTechnician(); break;
+                    case 'delete-technician': this.deleteTechnician(name); break;
+                    case 'add-bus-from-modal': this.addBusFromModal(); break;
+                    case 'delete-bus-from-modal': this.deleteBusFromModal(busId); break;
+                    case 'toggle-bus-category': this.toggleBusCategory(category); break;
+                    case 'save-wi-link': this.saveWorkInstructionLink(); break;
+                    case 'remove-wi-link': this.removeWorkInstructionLink(); break;
+                    case 'save-tech-selection': this.saveTechSelection(); break;
+                    case 'export-summary-csv': this.exportSummaryToCSV(); break;
+                    case 'export-summary-pdf': this.exportSummaryToPDF(); break;
+                    case 'export-tracker-csv': this.exportTrackerToCSV(); break;
+                    case 'export-tracker-pdf': this.exportTrackerToPDF(); break;
+                }
+            });
+            document.body.addEventListener('change', (e) => {
+                const target = e.target;
+                const action = target.dataset.action;
+                if (target.id === 'unit-selector') {
+                    this.state.activeBusUnit = target.value;
+                    this.saveData();
+                    this.render();
+                } else if (action === 'update-progress') {
+                    this.updateJobProgress(target.dataset.jobId, target.value);
+                } else if (action === 'update-time-spent') {
+                    this.updateTimeSpent(target.dataset.jobId);
+                }
+            });
+            document.body.addEventListener('input', (e) => {
+                const target = e.target;
+                const action = target.dataset.action;
+                if (action === 'update-notes') {
+                    this.updateJobNotes(target.dataset.jobId, target.value);
+                }
+            });
+        },
+        
+        // --- INITIALIZATION ---
+        init() {
+            this.loadData();
+            this.render();
+            this.attachEventListeners();
+            setInterval(() => this.updateClockDisplay(), 1000);
+        }
+    };
+
+    document.addEventListener('DOMContentLoaded', () => {
+        App.init();
+    });
+    </script>
+
+</body>
+</html>
